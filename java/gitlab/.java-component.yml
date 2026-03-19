@@ -1,0 +1,120 @@
+image: amazoncorretto:21-alpine-jdk
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=/cache/maven.repository -Dmaven.wagon.http.ssl.insecure=true"
+  MAVEN_CLI_OPTS: "-s .mvn/settings.xml --batch-mode -Pci_cd"
+
+cache:
+  paths:
+    - /cache/maven.repository
+
+stages:
+  - build
+  - lint_security
+  - test
+  - deploy
+
+build:
+  stage: build
+  except:
+    - tags
+    - schedules
+  script:
+    - ./mvnw $MAVEN_CLI_OPTS -U clean compile
+    - echo VERSION=$(./mvnw $MAVEN_CLI_OPTS --quiet org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate -Dexpression=project.version -DforceStdout) > build.env
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    expire_in: 1 day
+    paths:
+      - target/
+    reports:
+      dotenv: build.env
+
+sast-pmd:
+  stage: lint_security
+  script:
+    - echo "MAVEN_CLI_OPTS -> $MAVEN_CLI_OPTS"
+    - ./mvnw $MAVEN_CLI_OPTS -U pmd:check 
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    expire_in: 1 day
+    paths:
+      - target/
+    reports:
+      dotenv: build.env
+
+sast-spotbugs:
+  stage: lint_security
+  script:
+    - echo "MAVEN_CLI_OPTS -> $MAVEN_CLI_OPTS"
+    - ./mvnw $MAVEN_CLI_OPTS -U spotbugs:check
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    expire_in: 1 day
+    paths:
+      - target/
+    reports:
+      dotenv: build.env
+
+sca-owasp:
+  stage: lint_security
+  script:
+    - echo "MAVEN_CLI_OPTS -> $MAVEN_CLI_OPTS"
+    - ./mvnw $MAVEN_CLI_OPTS -U dependency-check:check
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    expire_in: 1 day
+    paths:
+      - target/
+    reports:
+      dotenv: build.env
+
+test:
+  stage: test
+  except:
+    - tags
+    - schedules
+  before_script:
+    - apk add --update ttf-dejavu
+  script: ./mvnw $MAVEN_CLI_OPTS clover:setup test clover:aggregate clover:clover clover:check
+  coverage: '/Total: \d+.\d+\%/'
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    when: always
+    expire_in: 5 day
+    paths:
+      - target/site/clover
+
+deploy:
+  stage: deploy
+  script:
+    - VERSION=$(./mvnw $MAVEN_CLI_OPTS --quiet org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate -Dexpression=project.version -DforceStdout)
+    - export phase=$(if [[ "$VERSION" == *SNAPSHOT ]]; then echo deploy; else echo install; fi)
+    - ./mvnw $MAVEN_CLI_OPTS clean $phase -DskipTests
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    when: always
+    expire_in: 1 day
+    paths:
+      - target/app.war
+      - "*/target/app.war"
+      - target/batch.jar
+      - "*/target/batch.jar"
+
+deploy-ga:
+  stage: deploy
+  only:
+    refs:
+      - main
+  except:
+    - schedules
+  script: ./mvnw $MAVEN_CLI_OPTS clean deploy package -DskipTests
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    when: always
+    expire_in: 1 day
+    paths:
+      - target/app.war
+      - "*/target/app.war"
+      - target/batch.jar
+      - "*/target/batch.jar"
